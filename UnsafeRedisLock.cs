@@ -18,12 +18,12 @@ using StackExchange.Redis;
 /// - Default 10ms retry delay (matches Strategy 3 for fair comparison)
 /// - UNSAFE release: Direct DEL without verification
 /// </summary>
-public class RedisLock : IAsyncDisposable
+public class UnsafeRedisLock : IAsyncDisposable
 {
     private string? _lockKey;
     private readonly IDatabase _database;
 
-    public RedisLock(IDatabase database)
+    public UnsafeRedisLock(IDatabase database)
     {
         _database = database;
     }

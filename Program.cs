@@ -296,7 +296,7 @@ app.MapPost("/withdraw_custom_lock", async (
         // LockAsync handles polling and timeout internally
         // await using ensures automatic lock release via DisposeAsync()
         // WARNING: Release uses direct DEL without token verification (UNSAFE)
-        await using (await new RedisLock(db).LockAsync(lockKey, lockTtl, waitBudget, retryDelay))
+        await using (await new UnsafeRedisLock(db).LockAsync(lockKey, lockTtl, waitBudget, retryDelay))
         {
             // STEP 2: Critical section (protected by lock)
             // Lock ensures only one process executes this section at a time
