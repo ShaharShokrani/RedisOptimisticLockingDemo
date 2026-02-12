@@ -1,0 +1,22 @@
+@startuml withdraw_lock_lua
+title Withdraw - Lua Script (atomic)
+actor Client
+participant "API\n(withdraw_lock_lua)" as API
+participant "Redis" as Redis
+
+Client -> API: Withdraw(userId, amount)
+note over API, Redis: **Single round-trip** (script runs entirely on server; no extra network)
+API -> Redis: Process withdrawal atomically:\ncheck balance, deduct amount, append to history, return new balance\n**EVALSHA** WithdrawScript | KEYS: balance_key, history_key | ARGV: amount
+note right of Redis
+  Server-side only (same round-trip):
+  **GET** → if missing/insufficient return; **DECRBY**; **LPUSH**; **LTRIM** 0 999; return new balance
+end note
+Redis --> API: result (missing | insufficient | newBalance)
+alt account missing
+    API --> Client: Account not found
+else insufficient
+    API --> Client: Insufficient funds
+else success
+    API --> Client: Success, new balance
+end
+@enduml

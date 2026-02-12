@@ -1,0 +1,86 @@
+@startuml withdraw_watch
+title Withdraw - Optimistic Locking (watch / transaction)
+actor Client
+participant "API\n(withdraw_watch)" as API
+participant "Redis" as Redis
+
+Client -> API: Withdraw(userId, amount)
+loop each attempt
+    note over API, Redis: **Round-trip 1**
+    API -> Redis: Read current balance\n**GET** balance_key
+    Redis --> API: balance
+    alt balance missing
+        API --> Client: Account not found
+    else balance too low
+        API --> Client: Insufficient funds
+    end
+    note over API, Redis: **Round-trip 2** (same transaction, one network call)
+    API -> Redis: Apply withdrawal only if balance unchanged:\ndeduct amount, append to withdrawal history\n**MULTI** + **WATCH**-like condition (StringEqual) + **DECRBY** balance_key amount + **LPUSH** history_key amount + **EXEC**
+    Redis --> API: applied (yes / no)
+    alt applied
+        API --> Client: Success, new balance
+    else not applied (balance was changed by another request)
+        API -> API: Wait, then retry
+    end
+end
+API --> Client: Conflict (too many retries)
+@enduml
+
+@startuml withdraw_lock_lua
+title Withdraw - Lua Script (atomic)
+actor Client
+participant "API\n(withdraw_lock_lua)" as API
+participant "Redis" as Redis
+
+Client -> API: Withdraw(userId, amount)
+note over API, Redis: **Single round-trip** (script runs entirely on server; no extra network)
+API -> Redis: Process withdrawal atomically:\ncheck balance, deduct amount, append to history, return new balance\n**EVALSHA** WithdrawScript | KEYS: balance_key, history_key | ARGV: amount
+note right of Redis
+  Server-side only (same round-trip):
+  **GET** → if missing/insufficient return; **DECRBY**; **LPUSH**; **LTRIM** 0 999; return new balance
+end note
+Redis --> API: result (missing | insufficient | newBalance)
+alt account missing
+    API --> Client: Account not found
+else insufficient
+    API --> Client: Insufficient funds
+else success
+    API --> Client: Success, new balance
+end
+@enduml
+
+@startuml withdraw_medallion
+title Withdraw - Distributed Lock (Medallion)
+actor Client
+participant "API\n(withdraw_medallion_distributed_lock)" as API
+participant "Redis" as Redis
+
+Client -> API: Withdraw(userId, amount)
+note over API, Redis: **Round-trip 1** (repeated until acquired or timeout)
+API -> Redis: Acquire exclusive lock for this user\n**SET** lock_key token NX PX 800 (poll with retry until waitBudget)
+alt lock not acquired (timeout)
+    API --> Client: Lock busy, try again later
+end
+Redis --> API: Lock acquired
+note over API, Redis: **Round-trip 2**
+API -> Redis: Read current balance\n**GET** balance_key
+Redis --> API: balance
+alt balance missing
+    note over API, Redis: **Round-trip** (release only)
+    API -> Redis: Release lock\n**DEL** lock_key (or Lua verify-token then DEL)
+    API --> Client: Account not found
+else balance too low
+    note over API, Redis: **Round-trip** (release only)
+    API -> Redis: Release lock\n**DEL** lock_key
+    API --> Client: Insufficient funds
+end
+note over API, Redis: **Round-trip 3**
+API -> Redis: Deduct amount from balance\n**DECRBY** balance_key amount
+Redis --> API: new balance
+note over API, Redis: **Round-trip 4**
+API -> Redis: Append withdrawal to history\n**LPUSH** history_key amount
+Redis --> API: done
+note over API, Redis: **Round-trip 5**
+API -> Redis: Release lock\n**DEL** lock_key (or Lua verify-token then DEL)
+API --> Client: Success, new balance
+@enduml

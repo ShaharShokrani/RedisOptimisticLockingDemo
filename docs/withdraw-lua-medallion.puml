@@ -1,0 +1,35 @@
+@startuml withdraw_medallion
+title Withdraw - Distributed Lock (Medallion)
+actor Client
+participant "API\n(withdraw_medallion_distributed_lock)" as API
+participant "Redis" as Redis
+
+Client -> API: Withdraw(userId, amount)
+note over API, Redis: **Round-trip 1** (repeated until acquired or timeout)
+API -> Redis: Acquire exclusive lock for this user\n**SET** lock_key token NX PX 800 (poll with retry until waitBudget)
+alt lock not acquired (timeout)
+    API --> Client: Lock busy, try again later
+end
+Redis --> API: Lock acquired
+note over API, Redis: **Round-trip 2**
+API -> Redis: Read current balance\n**GET** balance_key
+Redis --> API: balance
+alt balance missing
+    note over API, Redis: **Round-trip** (release only)
+    API -> Redis: Release lock\n**DEL** lock_key (or Lua verify-token then DEL)
+    API --> Client: Account not found
+else balance too low
+    note over API, Redis: **Round-trip** (release only)
+    API -> Redis: Release lock\n**DEL** lock_key
+    API --> Client: Insufficient funds
+end
+note over API, Redis: **Round-trip 3**
+API -> Redis: Deduct amount from balance\n**DECRBY** balance_key amount
+Redis --> API: new balance
+note over API, Redis: **Round-trip 4**
+API -> Redis: Append withdrawal to history\n**LPUSH** history_key amount
+Redis --> API: done
+note over API, Redis: **Round-trip 5**
+API -> Redis: Release lock\n**DEL** lock_key (or Lua verify-token then DEL)
+API --> Client: Success, new balance
+@enduml
